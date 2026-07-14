@@ -11,7 +11,7 @@ import typer
 
 from pipeline.balance import balance_levels
 from pipeline.loader import load_and_normalize
-from pipeline.master import master
+from pipeline.master import limit, master
 from pipeline.vocal_chain import process_vocal
 
 app = typer.Typer(add_completion=False, help="보컬과 MR을 자동 처리하는 CLI 도구")
@@ -77,7 +77,8 @@ def run(
     mastered_mix = master(mixed_audio, sample_rate)
     vocal_path = output_dir / f"{timestamp}_vocal_only.wav"
     mix_path = output_dir / f"{timestamp}_mixed.wav"
-    _write_wav(vocal_path, balanced_vocal, sample_rate)
+    # 밸런싱 게인으로 피크가 1.0을 넘을 수 있어 저장 전에 리미터로 보호한다.
+    _write_wav(vocal_path, limit(balanced_vocal, sample_rate), sample_rate)
     _write_wav(mix_path, mastered_mix, sample_rate)
     print(f"✅ Saved: {mix_path}")
     print(f"✅ Saved: {vocal_path}")

@@ -1,79 +1,98 @@
-기본 파일# AGENTS.md
+# AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+This file provides guidance to Codex when working in this repository.
 
 ## Project status
 
-This repo currently contains only PyCharm's default scaffold (`main.py`). The target project — **Aurafine M1 MVP** — has not been built yet. The structure and behavior below is the plan to implement, not yet-existing code to browse; use it as the spec when scaffolding files.
+Aurafine M1 has its directory structure, dependency list, CLI, and core DSP pipeline implemented. Treat this file as the implementation specification when extending or adjusting the pipeline.
 
-## What Aurafine is
+## Product scope
 
-A CLI audio processing pipeline (Python) that takes a vocal track and an MR (Music/Background) track, runs the vocal through a DSP processing chain, balances levels between vocal and MR, masters the result, and exports a mixed WAV file. M1 is CLI-only and rule-based (no web server, no ML models) — a FastAPI web layer is planned for M2 but is out of scope for now.
+Aurafine is a Python CLI audio-processing pipeline. It accepts a vocal track and, in mix mode, an MR (music/background) track; it processes the vocal, balances it against the MR, masters the result, and exports WAV files.
 
-The user is a Python beginner. When implementing or explaining pipeline code, briefly explain non-obvious Python concepts as they come up, and prefer Korean inline comments where they aid a beginner (per the conventions below).
+M1 is CLI-only and rule-based. Do not add a web server, FastAPI, database, or ML model. A web layer belongs to M2.
 
-## Target project structure
+The user is a Python beginner. Use simple control flow, type hints, descriptive names, and concise Korean inline comments where they help explain non-obvious Python or DSP concepts.
 
-```
-aurafine/
-├── main.py              # CLI entry point (typer)
-├── pipeline/
-│   ├── __init__.py
-│   ├── loader.py        # Audio loading & format normalization (ffmpeg/librosa)
-│   ├── vocal_chain.py   # Vocal processing chain (pedalboard)
-│   ├── balance.py       # Vocal/MR level matching
-│   └── master.py        # Limiter + LUFS normalization
-├── utils/
-│   ├── __init__.py
-│   └── analyzer.py      # Audio analysis helpers (RMS, LUFS, spectral)
-├── samples/             # Test audio files (user-provided, not committed)
-├── output/              # Processed files land here
-├── requirements.txt
-└── README.md
+## Project layout
+
+```text
+main.py                 # Typer CLI entry point and orchestration only
+pipeline/loader.py      # format normalization and audio loading
+pipeline/vocal_chain.py # vocal DSP chain
+pipeline/balance.py     # one-second RMS-based vocal/MR matching
+pipeline/master.py      # limiting and LUFS normalization
+utils/analyzer.py       # RMS, LUFS, and spectral analysis helpers
+samples/                # user-provided audio; never commit it
+output/                 # generated WAV files; never commit it
+requirements.txt        # pinned Python dependencies
+README.md               # user-facing setup and run instructions
 ```
 
-Each pipeline module should expose one clear, type-hinted function. Keep every file under 150 lines — split rather than let a module grow past that.
+Each pipeline module exposes one clear public, type-hinted function. Keep files under 150 lines; extract helpers rather than growing a module past that limit.
+
+## Environment
+
+- Python 3.11+ is required (the code uses `str | Path` union syntax; the macOS system Python 3.9 crashes at import). A working venv exists at `.venv/` (Python 3.12 from Homebrew) — use `.venv/bin/python`.
+- `ffmpeg` must be on PATH (installed via Homebrew at `/opt/homebrew/bin/ffmpeg`); `loader.py` shells out to it.
 
 ## Commands
 
-Once scaffolded:
-- Install deps: `pip install -r requirements.txt`
-- Run full mix: `python main.py --vocal samples/vocal.wav --mr samples/mr.wav --reverb pop`
-- Voice-only mode (no MR, no reverb mix): `python main.py --vocal samples/vocal.wav --mode voice`
+```bash
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python main.py --vocal samples/vocal.wav --mr samples/mr.wav --reverb pop
+.venv/bin/python main.py --vocal samples/vocal.wav --mode voice
+```
 
-There is no build step, linter, or test suite configured yet — set these up (and document the commands here) when they're added.
+No linter or test suite is configured yet. When one is added, document its installation and command in both this file and `README.md`.
 
-## Processing pipeline (fixed order)
+## Fixed pipeline order
 
-1. **Load & normalize** (`loader.py`) — convert input to 44100Hz / 24-bit WAV via `ffmpeg` (subprocess) + `librosa`.
-2. **Vocal chain** (`vocal_chain.py`, via `pedalboard`), applied in this order:
-   - High-pass filter, cutoff 100Hz
-   - De-esser targeting 6-10kHz, gentle reduction
-   - EQ: auto-detect and suppress resonant peaks, boost presence (3-5kHz)
-   - Compressor: 4:1 ratio, threshold auto-derived from RMS, 10ms attack / 100ms release
-   - Reverb: one of 3 presets selected via CLI arg — `dry` / `pop` / `ballad`
-3. **Gain staging** (`balance.py`) — match vocal RMS to MR RMS, analyzed in 1s segments (not a single global gain).
-4. **Mix** — sum processed vocal + MR.
-5. **Master** (`master.py`) — limiter at -1dBFS ceiling, then loudness-normalize to -14 LUFS via `pyloudnorm`.
-6. **Export** — write `output/[timestamp]_mixed.wav` and `output/[timestamp]_vocal_only.wav` (kept separate for A/B comparison).
+1. **Load and normalize**: use ffmpeg plus librosa to make inputs 44,100 Hz, 24-bit WAV data.
+2. **Process the vocal** with pedalboard in this exact order:
+   1. high-pass filter at 100 Hz;
+   2. gentle de-essing in the 6–10 kHz range;
+   3. resonant-peak suppression and a 3–5 kHz presence boost;
+   4. compressor: 4:1 ratio, RMS-derived threshold, 10 ms attack, 100 ms release;
+   5. reverb preset: `dry`, `pop`, or `ballad`.
+3. **Balance** the processed vocal to the MR using one-second RMS segments, with a +3 dB vocal offset (so the vocal sits above the MR) and a ±12 dB clamp.
+4. **Mix** the balanced vocal and MR.
+5. **Master** the final signal: limit to -1 dBFS, then normalize to -14 LUFS.
+6. **Export** timestamped WAV files under `output/`.
 
-This order matters: gain staging happens after the vocal chain (so compression/EQ changes are accounted for) and before mastering (which should see the final mix level, not the pre-balance one).
+Gain staging must occur after vocal processing and before mastering. Mastering must receive the final mix rather than the unbalanced vocal.
+
+## Hard-won implementation notes (do not regress)
+
+- **`pedalboard.Limiter` is unusable as a ceiling limiter**: it applies auto makeup gain (boosts a -20 dB signal by ~5 dB) and overshoots its threshold (a -0.4 dB signal comes out at 0 dBFS). `pipeline/master.py` uses a custom brickwall limiter instead (needed-gain curve → 6 ms lookahead `minimum_filter1d` → 3 ms `uniform_filter1d` smoothing → final clip guard). Do not swap it back.
+- **The de-esser is dynamic, not a static EQ cut**: `vocal_chain._deess` bandpasses 6–10 kHz (scipy `sosfiltfilt`), tracks the band envelope, and reduces only above an 80th-percentile reference (3:1, max -8 dB, 30 ms gain smoothing). Thresholds were tuned against synthetic audio only — revisit with real vocals.
+- **Balance gain must be interpolated, not stepped**: hard per-segment gain steps cause zipper noise. `balance.py` interpolates segment-center gains (`np.interp`) into a per-sample gain curve; near-silent segments are skipped and filled by interpolation.
+- **In mix mode, `vocal_only.wav` is limited before writing** (`limit()` call in `main.py`) — balance gain can push peaks past 1.0, and a PCM_24 write would clip.
+- **typer and click must be pinned together**: typer 0.12 broke against click 8.4 (`make_metavar()` signature change). Currently typer 0.26.8 + click 8.4.2, both pinned.
+- The loader converts everything to **mono** — an accepted M1 simplification (MR loses its stereo image); revisit in M2.
+
+## Modes and CLI rules
+
+- `mix` is the default mode and requires both `--vocal` and `--mr`.
+- `voice` requires `--vocal` only. It forces `dry` reverb, skips MR loading/balancing/mixing, and still applies the same limiter and -14 LUFS master stage to the vocal.
+- Accept only `dry`, `pop`, and `ballad` for `--reverb`; validate invalid options with a clear Typer error.
+- Print a short Korean or English progress line at each stage, for example `🎙 Loading audio...` and `⚙️ Processing vocal chain...`.
 
 ## Libraries
 
-- `pedalboard` (Spotify) — vocal chain DSP
-- `librosa` — audio analysis
-- `pyloudnorm` — LUFS measurement & normalization
-- `noisereduce` — optional noise reduction
-- `soundfile` — WAV read/write
-- `ffmpeg-python` — format conversion
-- `typer` — CLI argument parsing (chosen over `argparse` for being more beginner-friendly)
+- `pedalboard`: vocal effects (HPF, EQ, compressor, reverb) — **not** the limiter (see notes above)
+- `scipy`: de-esser band filtering and the custom limiter (direct dependency, pinned)
+- `librosa`: loading and spectral analysis
+- `pyloudnorm`: LUFS measurement and normalization
+- `noisereduce`: optional noise reduction only; do not make it mandatory in the chain
+- `soundfile`: WAV output
+- `ffmpeg-python` or `subprocess`: ffmpeg conversion
+- `typer` (+ pinned `click`): CLI parsing
 
-## Conventions
+## Implementation conventions
 
-- Python 3.11+.
-- Pin versions in `requirements.txt`.
-- Type-hint every pipeline function.
-- Emit progress to the console at each pipeline stage, e.g. `"🎙 Loading audio..."`, `"⚙️ Processing vocal chain..."`.
-- Favor Korean inline comments where they help explain a concept to a Python beginner.
-- README.md should cover: project description, install (`pip install -r requirements.txt`), and usage examples.
+- Target Python 3.11+.
+- Keep dependency versions pinned in `requirements.txt`.
+- Use `numpy.ndarray` for audio data and pass the sample rate explicitly.
+- Handle mono/stereo shapes deliberately and document the chosen convention at module boundaries.
+- Do not commit source audio or generated output.
