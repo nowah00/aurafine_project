@@ -1,0 +1,8 @@
+pedalboard==0.9.14
+librosa==0.10.2.post1
+pyloudnorm==0.1.1
+noisereduce==3.0.2
+soundfile==0.12.1
+ffmpeg-python==0.2.0
+typer==0.12.3
+numpy==1.26.4
