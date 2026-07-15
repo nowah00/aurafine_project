@@ -1,5 +1,6 @@
 """Aurafine CLI 엔트리 포인트."""
 
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -14,6 +15,10 @@ from pipeline.master import master
 from pipeline.vocal_chain import process_vocal
 
 app = typer.Typer(add_completion=False, help="보컬과 MR을 자동 처리하는 CLI 도구")
+
+# Windows 기본 콘솔(cp949)은 이모지를 출력하지 못하므로 UTF-8로 강제한다.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8")
 
 
 def _align_lengths(first: np.ndarray, second: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
