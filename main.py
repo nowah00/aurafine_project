@@ -50,7 +50,9 @@ def _run_stems(tracks: dict[str, Path], output_dir: Path, timestamp: str) -> Non
 
 @app.command()
 def run(
-    vocal: Optional[Path] = typer.Option(None, exists=True, dir_okay=False, help="보컬 트랙 경로"),
+    vocal: Optional[Path] = typer.Option(
+        None, exists=True, dir_okay=False, help="보컬 트랙 경로 (stems 모드에서는 원음 그대로 밸런싱만 적용)"
+    ),
     mr: Optional[Path] = typer.Option(None, exists=True, dir_okay=False, help="MR(반주) 트랙 경로"),
     drum: Optional[Path] = typer.Option(None, exists=True, dir_okay=False, help="드럼 트랙 경로"),
     bass: Optional[Path] = typer.Option(None, exists=True, dir_okay=False, help="베이스 트랙 경로"),
@@ -82,12 +84,13 @@ def run(
             ("electric_guitar", electric_guitar),
             ("acoustic_guitar", acoustic_guitar),
             ("piano", piano),
+            ("vocal", vocal),
         )
         if path is not None
     }
     if mode == "stems" and len(stem_tracks) < 2:
         raise typer.BadParameter(
-            "stems 모드에서는 --drum --bass --electric-guitar --acoustic-guitar --piano 중 "
+            "stems 모드에서는 --drum --bass --electric-guitar --acoustic-guitar --piano --vocal 중 "
             "2개 이상을 입력해야 합니다."
         )
 

@@ -8,7 +8,7 @@ Aurafine M1 has its directory structure, dependency list, CLI, and core DSP pipe
 
 ## Product scope
 
-Aurafine is a Python CLI audio-processing pipeline. It accepts a vocal track and, in mix mode, an MR (music/background) track; it processes the vocal, balances it against the MR, masters the result, and exports WAV files. A separate `stems` mode balances any 2+ of a five-track instrument session (drum, bass, electric guitar, acoustic guitar, piano) against each other instead of a vocal/MR pair.
+Aurafine is a Python CLI audio-processing pipeline. It accepts a vocal track and, in mix mode, an MR (music/background) track; it processes the vocal, balances it against the MR, masters the result, and exports WAV files. A separate `stems` mode balances any 2+ of a six-track session (drum, bass, electric guitar, acoustic guitar, piano, vocal) against each other instead of a vocal/MR pair — vocal is accepted raw here, with no DSP chain applied.
 
 M1 is CLI-only and rule-based. Do not add a web server, FastAPI, database, or ML model. A web layer belongs to M2.
 
@@ -65,11 +65,11 @@ Gain staging must occur after vocal processing and before mastering. Mastering m
 
 ## Stems mode pipeline order
 
-`stems` mode skips the vocal chain entirely — it takes 2 to 5 raw instrument tracks (any subset of drum, bass, electric guitar, acoustic guitar, piano) and just balances, mixes, and masters them:
+`stems` mode skips the vocal chain entirely — it takes 2 to 6 raw tracks (any subset of drum, bass, electric guitar, acoustic guitar, piano, vocal) and just balances, mixes, and masters them:
 
-1. **Pick the anchor track**: whichever of `--drum`/`--bass`/`--electric-guitar`/`--acoustic-guitar`/`--piano` appears first on the command line (scanned from `sys.argv` in `pipeline/stems._pick_anchor`) becomes the reference track. It is never gain-adjusted. If a track's flag can't be found in `sys.argv` (e.g. the function is called from other code, not the CLI), the first dict entry is used as a fallback.
-2. **Load and normalize** every provided track the same way as step 1 of the mix/voice pipeline.
-3. **Balance** each non-anchor track against the anchor using `balance_levels` (same one-second RMS/interpolation machinery as vocal/MR balancing). The target offset between any two tracks is the difference of their entries in `pipeline/stems.STEM_TARGET_LEVELS_DB` (drum 0 dB, bass -2 dB, electric guitar -5 dB, acoustic guitar -6 dB, piano -5 dB), so the same relative balance holds no matter which track ends up as anchor. ±12 dB clamp applies as usual.
+1. **Pick the anchor track**: whichever of `--drum`/`--bass`/`--electric-guitar`/`--acoustic-guitar`/`--piano`/`--vocal` appears first on the command line (scanned from `sys.argv` in `pipeline/stems._pick_anchor`) becomes the reference track. It is never gain-adjusted. If a track's flag can't be found in `sys.argv` (e.g. the function is called from other code, not the CLI), the first dict entry is used as a fallback.
+2. **Load and normalize** every provided track the same way as step 1 of the mix/voice pipeline. Vocal is loaded raw here — `process_vocal` (HPF/de-ess/EQ/compressor/reverb) is never called in `stems` mode.
+3. **Balance** each non-anchor track against the anchor using `balance_levels` (same one-second RMS/interpolation machinery as vocal/MR balancing). The target offset between any two tracks is the difference of their entries in `pipeline/stems.STEM_TARGET_LEVELS_DB` (drum 0 dB, bass -2 dB, electric guitar -5 dB, acoustic guitar -6 dB, piano -5 dB, vocal +3 dB — the vocal figure reuses the same "+3 dB over the backing" convention as `mix` mode), so the same relative balance holds no matter which track ends up as anchor. ±12 dB clamp applies as usual.
 4. **Mix** all balanced tracks by summing them.
 5. **Master** the summed mix exactly like `mix` mode: limit to -1 dBFS, then normalize to -14 LUFS.
 6. **Export** a single `[timestamp]_stems_mixed.wav` under `output/`.
@@ -91,7 +91,7 @@ These target levels are genre-agnostic defaults agreed with the user, not a phys
 
 - `mix` is the default mode and requires both `--vocal` and `--mr`.
 - `voice` requires `--vocal` only. It forces `dry` reverb, skips MR loading/balancing/mixing, and still applies the same limiter and -14 LUFS master stage to the vocal.
-- `stems` requires at least 2 of `--drum`, `--bass`, `--electric-guitar`, `--acoustic-guitar`, and `--piano` (any subset, not all five); it ignores `--vocal`, `--mr`, and `--reverb` entirely (no vocal chain runs in this mode). The anchor track is whichever of those flags was typed first on the command line.
+- `stems` requires at least 2 of `--drum`, `--bass`, `--electric-guitar`, `--acoustic-guitar`, `--piano`, and `--vocal` (any subset, not all six); it ignores `--mr` and `--reverb` entirely, and `--vocal` here is a plain raw track like any other stem (no vocal chain runs in this mode). The anchor track is whichever of those flags was typed first on the command line.
 - Accept only `dry`, `pop`, and `ballad` for `--reverb`; validate invalid options with a clear Typer error.
 - Print a short Korean or English progress line at each stage, for example `🎙 Loading audio...` and `⚙️ Processing vocal chain...`.
 

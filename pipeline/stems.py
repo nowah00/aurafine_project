@@ -1,8 +1,9 @@
-"""세션 스템(드럼/베이스/일렉기타/통기타/피아노) 레벨 밸런싱.
+"""세션 스템(드럼/베이스/일렉기타/통기타/피아노/보컬) 레벨 밸런싱.
 
 트랙 하나를 기준(anchor)으로 삼고, 나머지 트랙을 목표 레벨에 맞춘다.
 기준 트랙은 사용자가 커맨드라인에 가장 먼저 입력한 트랙으로 정하므로,
 드럼이 없어도(예: 베이스+일렉기타만) 최소 2개 트랙이면 동작한다.
+보컬을 포함해도 vocal_chain의 DSP는 적용하지 않고 원음 그대로 레벨만 맞춘다.
 """
 
 import sys
@@ -13,14 +14,16 @@ import numpy as np
 from pipeline.balance import balance_levels
 from pipeline.loader import load_and_normalize
 
-# 드럼을 0dB로 두고 사용자와 협의해 정한 악기별 목표 레벨(dB).
+# 드럼을 0dB로 두고 사용자와 협의해 정한 트랙별 목표 레벨(dB).
 # 실제 anchor가 드럼이 아니어도, 두 트랙의 목표 레벨 '차이'를 offset으로 쓴다.
+# vocal은 mix 모드의 "MR보다 +3dB 위" 관행을 그대로 재사용한다.
 STEM_TARGET_LEVELS_DB: dict[str, float] = {
     "drum": 0.0,
     "bass": -2.0,
     "electric_guitar": -5.0,
     "acoustic_guitar": -6.0,
     "piano": -5.0,
+    "vocal": 3.0,
 }
 
 # 스템 이름 -> typer가 만드는 실제 CLI 플래그 (kebab-case).
@@ -30,6 +33,7 @@ _STEM_CLI_FLAGS: dict[str, str] = {
     "--electric-guitar": "electric_guitar",
     "--acoustic-guitar": "acoustic_guitar",
     "--piano": "piano",
+    "--vocal": "vocal",
 }
 
 
