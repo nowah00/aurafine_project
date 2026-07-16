@@ -12,6 +12,7 @@ import typer
 from pipeline.balance import balance_levels
 from pipeline.loader import load_and_normalize
 from pipeline.master import limit, master
+from pipeline.stems import balance_stems
 from pipeline.vocal_chain import process_vocal
 
 app = typer.Typer(add_completion=False, help="보컬과 MR을 자동 처리하는 CLI 도구")
@@ -21,10 +22,10 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
 
 
-def _align_lengths(first: np.ndarray, second: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """짧은 트랙 뒤를 무음으로 채워 두 배열의 길이를 같게 만든다."""
-    length = max(first.size, second.size)
-    return np.pad(first, (0, length - first.size)), np.pad(second, (0, length - second.size))
+def _align_lengths(*tracks: np.ndarray) -> tuple[np.ndarray, ...]:
+    """짧은 트랙 뒤를 무음으로 채워 모든 배열의 길이를 같게 만든다."""
+    length = max(track.size for track in tracks)
+    return tuple(np.pad(track, (0, length - track.size)) for track in tracks)
 
 
 def _write_wav(path: Path, audio: np.ndarray, sample_rate: int) -> None:
@@ -32,20 +33,78 @@ def _write_wav(path: Path, audio: np.ndarray, sample_rate: int) -> None:
     sf.write(path, audio, sample_rate, subtype="PCM_24")
 
 
+def _run_stems(
+    drum: Path,
+    bass: Path,
+    electric_guitar: Path,
+    acoustic_guitar: Path,
+    piano: Path,
+    output_dir: Path,
+    timestamp: str,
+) -> None:
+    """드럼을 기준으로 베이스/일렉기타/통기타/피아노 레벨을 맞춰 믹스한다."""
+    print("🎙 Loading audio...")
+    drum_audio, sample_rate = load_and_normalize(drum)
+    bass_audio, _ = load_and_normalize(bass, sample_rate)
+    electric_audio, _ = load_and_normalize(electric_guitar, sample_rate)
+    acoustic_audio, _ = load_and_normalize(acoustic_guitar, sample_rate)
+    piano_audio, _ = load_and_normalize(piano, sample_rate)
+    drum_audio, bass_audio, electric_audio, acoustic_audio, piano_audio = _align_lengths(
+        drum_audio, bass_audio, electric_audio, acoustic_audio, piano_audio
+    )
+
+    print("🎛 Balancing stems...")
+    balanced = balance_stems(
+        drum_audio, bass_audio, electric_audio, acoustic_audio, piano_audio, sample_rate
+    )
+    mixed_audio = sum(balanced.values())
+
+    print("🎚 Mastering mix...")
+    mastered_mix = master(mixed_audio, sample_rate)
+    mix_path = output_dir / f"{timestamp}_stems_mixed.wav"
+    _write_wav(mix_path, mastered_mix, sample_rate)
+    print(f"✅ Saved: {mix_path}")
+
+
 @app.command()
 def run(
-    vocal: Path = typer.Option(..., exists=True, dir_okay=False, help="보컬 트랙 경로"),
+    vocal: Optional[Path] = typer.Option(None, exists=True, dir_okay=False, help="보컬 트랙 경로"),
     mr: Optional[Path] = typer.Option(None, exists=True, dir_okay=False, help="MR(반주) 트랙 경로"),
+    drum: Optional[Path] = typer.Option(None, exists=True, dir_okay=False, help="드럼 트랙 경로"),
+    bass: Optional[Path] = typer.Option(None, exists=True, dir_okay=False, help="베이스 트랙 경로"),
+    electric_guitar: Optional[Path] = typer.Option(
+        None, exists=True, dir_okay=False, help="일렉 기타 트랙 경로"
+    ),
+    acoustic_guitar: Optional[Path] = typer.Option(
+        None, exists=True, dir_okay=False, help="통기타 트랙 경로"
+    ),
+    piano: Optional[Path] = typer.Option(None, exists=True, dir_okay=False, help="피아노 트랙 경로"),
     reverb: str = typer.Option("dry", help="리버브 프리셋: dry / pop / ballad"),
-    mode: str = typer.Option("mix", help="mix: 보컬+MR / voice: 보컬만"),
+    mode: str = typer.Option("mix", help="mix: 보컬+MR / voice: 보컬만 / stems: 세션 악기 밸런스"),
 ) -> None:
-    """보컬을 처리해 믹스 또는 보컬 단독 WAV 파일을 저장한다."""
-    if mode not in {"mix", "voice"}:
-        raise typer.BadParameter("mode는 mix 또는 voice여야 합니다.")
+    """보컬 믹스/보컬 단독, 또는 세션 스템 밸런스 WAV 파일을 저장한다."""
+    if mode not in {"mix", "voice", "stems"}:
+        raise typer.BadParameter("mode는 mix, voice, stems 중 하나여야 합니다.")
     if reverb not in {"dry", "pop", "ballad"}:
         raise typer.BadParameter("reverb는 dry, pop, ballad 중 하나여야 합니다.")
+    if mode in {"mix", "voice"} and vocal is None:
+        raise typer.BadParameter("mix/voice 모드에서는 --vocal 경로가 필요합니다.")
     if mode == "mix" and mr is None:
         raise typer.BadParameter("mix 모드에서는 --mr 경로가 필요합니다.")
+    if mode == "stems" and None in (drum, bass, electric_guitar, acoustic_guitar, piano):
+        raise typer.BadParameter(
+            "stems 모드에서는 --drum --bass --electric-guitar --acoustic-guitar --piano 경로가 모두 필요합니다."
+        )
+
+    output_dir = Path("output")
+    output_dir.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if mode == "stems":
+        assert drum is not None and bass is not None and electric_guitar is not None
+        assert acoustic_guitar is not None and piano is not None
+        _run_stems(drum, bass, electric_guitar, acoustic_guitar, piano, output_dir, timestamp)
+        return
 
     print("🎙 Loading audio...")
     vocal_audio, sample_rate = load_and_normalize(vocal)
@@ -55,9 +114,6 @@ def run(
 
     print("⚙️ Processing vocal chain...")
     processed_vocal = process_vocal(vocal_audio, sample_rate, "dry" if mode == "voice" else reverb)
-    output_dir = Path("output")
-    output_dir.mkdir(exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     if mode == "voice":
         print("🎚 Mastering vocal...")

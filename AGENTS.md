@@ -8,7 +8,7 @@ Aurafine M1 has its directory structure, dependency list, CLI, and core DSP pipe
 
 ## Product scope
 
-Aurafine is a Python CLI audio-processing pipeline. It accepts a vocal track and, in mix mode, an MR (music/background) track; it processes the vocal, balances it against the MR, masters the result, and exports WAV files.
+Aurafine is a Python CLI audio-processing pipeline. It accepts a vocal track and, in mix mode, an MR (music/background) track; it processes the vocal, balances it against the MR, masters the result, and exports WAV files. A separate `stems` mode balances a five-track instrument session (drum, bass, electric guitar, acoustic guitar, piano) against each other instead of a vocal/MR pair.
 
 M1 is CLI-only and rule-based. Do not add a web server, FastAPI, database, or ML model. A web layer belongs to M2.
 
@@ -20,7 +20,8 @@ The user is a Python beginner. Use simple control flow, type hints, descriptive 
 main.py                 # Typer CLI entry point and orchestration only
 pipeline/loader.py      # format normalization and audio loading
 pipeline/vocal_chain.py # vocal DSP chain
-pipeline/balance.py     # one-second RMS-based vocal/MR matching
+pipeline/balance.py     # one-second RMS-based level matching (track vs. reference)
+pipeline/stems.py       # stems-mode offset table and drum-referenced balancing
 pipeline/master.py      # limiting and LUFS normalization
 utils/analyzer.py       # RMS, LUFS, and spectral analysis helpers
 samples/                # user-provided audio; never commit it
@@ -62,11 +63,26 @@ No linter or test suite is configured yet. When one is added, document its insta
 
 Gain staging must occur after vocal processing and before mastering. Mastering must receive the final mix rather than the unbalanced vocal.
 
+## Stems mode pipeline order
+
+`stems` mode skips the vocal chain entirely — it takes five raw instrument tracks and just balances, mixes, and masters them:
+
+1. **Load and normalize** all five tracks (drum, bass, electric guitar, acoustic guitar, piano) the same way as step 1 above.
+2. **Balance** each non-drum track against the drum track using `balance_levels` (same one-second RMS/interpolation machinery as vocal/MR balancing), targeting a fixed offset from `pipeline/stems.STEM_OFFSETS_DB`:
+   - bass: -2 dB, electric guitar: -5 dB, acoustic guitar: -6 dB, piano: -5 dB (all relative to the drum track, ±12 dB clamp)
+   - Drum is the anchor (0 dB) and is never gain-adjusted.
+3. **Mix** all five balanced tracks by summing them.
+4. **Master** the summed mix exactly like `mix` mode: limit to -1 dBFS, then normalize to -14 LUFS.
+5. **Export** a single `[timestamp]_stems_mixed.wav` under `output/`.
+
+These offsets are genre-agnostic defaults agreed with the user, not a physical constant — revisit by ear against real stems, and consider per-genre presets (like the `reverb` presets) if a single fixed table proves too generic.
+
 ## Hard-won implementation notes (do not regress)
 
 - **`pedalboard.Limiter` is unusable as a ceiling limiter**: it applies auto makeup gain (boosts a -20 dB signal by ~5 dB) and overshoots its threshold (a -0.4 dB signal comes out at 0 dBFS). `pipeline/master.py` uses a custom brickwall limiter instead (needed-gain curve → 6 ms lookahead `minimum_filter1d` → 3 ms `uniform_filter1d` smoothing → final clip guard). Do not swap it back.
 - **The de-esser is dynamic, not a static EQ cut**: `vocal_chain._deess` bandpasses 6–10 kHz (scipy `sosfiltfilt`), tracks the band envelope, and reduces only above an 80th-percentile reference (3:1, max -8 dB, 30 ms gain smoothing). Thresholds were tuned against synthetic audio only — revisit with real vocals.
 - **Balance gain must be interpolated, not stepped**: hard per-segment gain steps cause zipper noise. `balance.py` interpolates segment-center gains (`np.interp`) into a per-sample gain curve; near-silent segments are skipped and filled by interpolation.
+- **`balance_levels` is generic, not vocal-specific**: its parameters are `track`/`reference`/`offset_db`, not `vocal`/`mr`/`vocal_offset_db` — both `mix` mode (vocal vs. MR, +3 dB) and `stems` mode (each instrument vs. drum, per-instrument offset) call the same function. Don't re-fork this logic per mode.
 - **In mix mode, `vocal_only.wav` is limited before writing** (`limit()` call in `main.py`) — balance gain can push peaks past 1.0, and a PCM_24 write would clip.
 - **typer and click must be pinned together**: typer 0.12 broke against click 8.4 (`make_metavar()` signature change). Currently typer 0.26.8 + click 8.4.2, both pinned.
 - The loader converts everything to **mono** — an accepted M1 simplification (MR loses its stereo image); revisit in M2.
@@ -75,6 +91,7 @@ Gain staging must occur after vocal processing and before mastering. Mastering m
 
 - `mix` is the default mode and requires both `--vocal` and `--mr`.
 - `voice` requires `--vocal` only. It forces `dry` reverb, skips MR loading/balancing/mixing, and still applies the same limiter and -14 LUFS master stage to the vocal.
+- `stems` requires all five of `--drum`, `--bass`, `--electric-guitar`, `--acoustic-guitar`, and `--piano`; it ignores `--vocal`, `--mr`, and `--reverb` entirely (no vocal chain runs in this mode).
 - Accept only `dry`, `pop`, and `ballad` for `--reverb`; validate invalid options with a clear Typer error.
 - Print a short Korean or English progress line at each stage, for example `🎙 Loading audio...` and `⚙️ Processing vocal chain...`.
 
