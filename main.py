@@ -12,7 +12,7 @@ import typer
 from pipeline.balance import balance_levels
 from pipeline.loader import load_and_normalize
 from pipeline.master import limit, master
-from pipeline.stems import balance_stems
+from pipeline.stems import load_and_balance_stems
 from pipeline.vocal_chain import process_vocal
 
 app = typer.Typer(add_completion=False, help="보컬과 MR을 자동 처리하는 CLI 도구")
@@ -33,30 +33,12 @@ def _write_wav(path: Path, audio: np.ndarray, sample_rate: int) -> None:
     sf.write(path, audio, sample_rate, subtype="PCM_24")
 
 
-def _run_stems(
-    drum: Path,
-    bass: Path,
-    electric_guitar: Path,
-    acoustic_guitar: Path,
-    piano: Path,
-    output_dir: Path,
-    timestamp: str,
-) -> None:
-    """드럼을 기준으로 베이스/일렉기타/통기타/피아노 레벨을 맞춰 믹스한다."""
+def _run_stems(tracks: dict[str, Path], output_dir: Path, timestamp: str) -> None:
+    """세션 스템들의 레벨을 맞춰 믹스한다. (기준 트랙: 커맨드라인에 먼저 입력된 트랙)"""
     print("🎙 Loading audio...")
-    drum_audio, sample_rate = load_and_normalize(drum)
-    bass_audio, _ = load_and_normalize(bass, sample_rate)
-    electric_audio, _ = load_and_normalize(electric_guitar, sample_rate)
-    acoustic_audio, _ = load_and_normalize(acoustic_guitar, sample_rate)
-    piano_audio, _ = load_and_normalize(piano, sample_rate)
-    drum_audio, bass_audio, electric_audio, acoustic_audio, piano_audio = _align_lengths(
-        drum_audio, bass_audio, electric_audio, acoustic_audio, piano_audio
-    )
-
     print("🎛 Balancing stems...")
-    balanced = balance_stems(
-        drum_audio, bass_audio, electric_audio, acoustic_audio, piano_audio, sample_rate
-    )
+    balanced, anchor_name, sample_rate = load_and_balance_stems(tracks)
+    print(f"   (기준 트랙: {anchor_name})")
     mixed_audio = sum(balanced.values())
 
     print("🎚 Mastering mix...")
@@ -91,9 +73,22 @@ def run(
         raise typer.BadParameter("mix/voice 모드에서는 --vocal 경로가 필요합니다.")
     if mode == "mix" and mr is None:
         raise typer.BadParameter("mix 모드에서는 --mr 경로가 필요합니다.")
-    if mode == "stems" and None in (drum, bass, electric_guitar, acoustic_guitar, piano):
+
+    stem_tracks = {
+        name: path
+        for name, path in (
+            ("drum", drum),
+            ("bass", bass),
+            ("electric_guitar", electric_guitar),
+            ("acoustic_guitar", acoustic_guitar),
+            ("piano", piano),
+        )
+        if path is not None
+    }
+    if mode == "stems" and len(stem_tracks) < 2:
         raise typer.BadParameter(
-            "stems 모드에서는 --drum --bass --electric-guitar --acoustic-guitar --piano 경로가 모두 필요합니다."
+            "stems 모드에서는 --drum --bass --electric-guitar --acoustic-guitar --piano 중 "
+            "2개 이상을 입력해야 합니다."
         )
 
     output_dir = Path("output")
@@ -101,9 +96,7 @@ def run(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     if mode == "stems":
-        assert drum is not None and bass is not None and electric_guitar is not None
-        assert acoustic_guitar is not None and piano is not None
-        _run_stems(drum, bass, electric_guitar, acoustic_guitar, piano, output_dir, timestamp)
+        _run_stems(stem_tracks, output_dir, timestamp)
         return
 
     print("🎙 Loading audio...")
