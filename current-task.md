@@ -68,6 +68,7 @@ Aurafine은 보컬/MR 트랙을 입력받아 보컬 보정 → 레벨 밸런싱 
   - 실제 스테레오 샘플로 검증: mix/stems 출력 ch=2·-14 LUFS·-1dBFS, L≠R(이미지 보존 확인). 모노 입력→모노 출력도 확인.
   - `CLAUDE.md`/`README.md`/`current-task.md` 문서 갱신.
 - **문서 재설계**: `CLAUDE.md`의 "Project layout"을 파일별 역할·공개 API 정확히 명시하도록 다시 설계(부정확했던 "모듈당 공개 함수 1개" 규칙 수정, 의존성 방향 명시). `AGENTS.md`(Codex 스펙)도 헤더만 제외하고 동일 내용으로 동기화.
+- **실제 샘플 스테레오 믹싱 확인**: gaudiolab 4트랙(drum 기준 + bass/piano/vocal, 전부 스테레오)으로 stems 모드 실행 → 출력 스테레오(ch=2), -14.00 LUFS, -1.00 dBFS, L-R 상관 0.81(이미지 보존). 사용자 청취 확인 완료.
 
 ### 이전 커밋 이력 (참고)
 - `b9e3d0b` 보컬을 stems 모드의 원음 트랙으로 허용
