@@ -17,20 +17,36 @@ The user is a Python beginner. Use simple control flow, type hints, descriptive 
 ## Project layout
 
 ```text
-main.py                 # Typer CLI entry point and orchestration only
-pipeline/loader.py      # format normalization and audio loading
-pipeline/vocal_chain.py # vocal DSP chain
-pipeline/balance.py     # one-second RMS-based level matching (track vs. reference)
-pipeline/stems.py       # stems-mode target-level table, anchor selection, and balancing
-pipeline/master.py      # limiting and LUFS normalization
-utils/analyzer.py       # RMS, LUFS, and spectral analysis helpers
+main.py                 # Typer CLI: flag validation, orchestration, WAV export
+pipeline/loader.py      # audio load + format/channel normalization + channel-layout helpers
+pipeline/vocal_chain.py # vocal DSP chain (mono only): HPF → de-ess → EQ → compressor → reverb
+pipeline/balance.py     # generic RMS level matching (track vs. reference, mono/stereo)
+pipeline/stems.py       # stems-mode target table, anchor pick, load + per-track balancing
+pipeline/master.py      # channel-linked brickwall limiter + LUFS normalization
+utils/analyzer.py       # stateless RMS / LUFS / spectral-peak helpers
 samples/                # user-provided audio; never commit it
 output/                 # generated WAV files; never commit it
 requirements.txt        # pinned Python dependencies
 README.md               # user-facing setup and run instructions
+current-task.md         # dev log / progress tracker (append per work session)
+CLAUDE.md / AGENTS.md   # implementation spec for Claude Code / Codex — keep the two in sync
 ```
 
-Each pipeline module exposes one clear public, type-hinted function. Keep files under 150 lines; extract helpers rather than growing a module past that limit.
+### Per-file responsibilities and public API
+
+Each module owns one responsibility and exposes only the type-hinted functions listed below (names prefixed `_` are private helpers; don't call them across modules). Keep every file under 150 lines — extract helpers rather than grow past the limit. The dependency direction is one-way: `main` → `pipeline/*` → `utils/analyzer`; `pipeline/loader` is the shared audio-format layer that `main` and `stems` both import.
+
+- **`main.py`** — CLI entry point and the *only* orchestration layer. Public: `run(...)` (the Typer command). Validates mode/flags, loads via `loader`, routes each mode (`mix` / `voice` / `stems`) through the right pipeline stages, prints progress lines, and writes timestamped WAVs. Private helpers: `_align_lengths` (frame-axis padding via `loader.pad_to_length`), `_write_wav` (PCM_24), `_run_stems` (stems orchestration). No DSP math lives here.
+- **`pipeline/loader.py`** — all audio I/O and channel-layout normalization. Public:
+  - `load_and_normalize(path, sample_rate=44100, mono=False) -> (audio, sr)` — ffmpeg to 44.1 kHz/24-bit, then librosa. Preserves input channels unless `mono=True`; returns mono `(N,)` or stereo `(N, 2)` (3+ channels truncated to the first 2).
+  - `pad_to_length(audio, length)` — zero-pad the frame axis, mono/stereo aware.
+  - `to_stereo(audio)` — upmix mono to dual-mono `(N, 2)`.
+  - `match_channels(*tracks)` — if any track is stereo, upmix the rest so they can be summed.
+- **`pipeline/vocal_chain.py`** — the vocal effect chain, **mono in / mono out**; never runs in `stems` mode. Public: `process_vocal(audio, sample_rate, reverb='dry') -> audio`. Private: `_deess` (dynamic de-esser), `_smooth`; module constants `ReverbPreset`, `_REVERB_SETTINGS`.
+- **`pipeline/balance.py`** — one generic level matcher shared by every mode. Public: `balance_levels(track, reference, sample_rate, segment_seconds=1.0, offset_db=3.0) -> track_scaled`. Builds a smooth per-sample gain curve; applies the same curve to both stereo channels.
+- **`pipeline/stems.py`** — stems-mode balancing built on `balance_levels`. Public: `STEM_TARGET_LEVELS_DB` (target table), `balance_stems(tracks, anchor, sample_rate)`, `load_and_balance_stems(tracks) -> (balanced_dict, anchor_name, sr)`. Private: `_pick_anchor` (scans `sys.argv`), `_STEM_CLI_FLAGS`. Loads raw (no vocal chain), aligns length + channels, balances each track against the anchor.
+- **`pipeline/master.py`** — final loudness/peak stage. Public: `limit(audio, sample_rate, ceiling_db=-1.0)` (channel-linked brickwall limiter) and `master(audio, sample_rate, target_lufs=-14.0, ceiling_db=-1.0)` (LUFS-normalize then limit).
+- **`utils/analyzer.py`** — stateless numeric helpers with no audio I/O. Public: `compute_rms(audio)`, `compute_lufs(audio, sample_rate)`, `find_resonant_peaks(audio, sample_rate, max_peaks=3)`. `compute_rms`/`compute_lufs` accept mono or stereo; `find_resonant_peaks` is mono/vocal-only.
 
 ## Environment
 
@@ -49,7 +65,7 @@ No linter or test suite is configured yet. When one is added, document its insta
 
 ## Fixed pipeline order
 
-1. **Load and normalize**: use ffmpeg plus librosa to make inputs 44,100 Hz, 24-bit WAV data.
+1. **Load and normalize**: use ffmpeg plus librosa to make inputs 44,100 Hz, 24-bit WAV data. Channel count is preserved by default (mono stays 1-D `(N,)`, stereo becomes 2-D `(N, 2)`); the vocal is the one exception — it is always loaded mono (`load_and_normalize(..., mono=True)`) because the de-esser and resonant-peak finder are mono-only.
 2. **Process the vocal** with pedalboard in this exact order:
    1. high-pass filter at 100 Hz;
    2. gentle de-essing in the 6–10 kHz range;
@@ -83,9 +99,10 @@ These target levels are genre-agnostic defaults agreed with the user, not a phys
 - **Balance gain must be interpolated, not stepped**: hard per-segment gain steps cause zipper noise. `balance.py` interpolates segment-center gains (`np.interp`) into a per-sample gain curve; near-silent segments are skipped and filled by interpolation.
 - **`balance_levels` is generic, not vocal-specific**: its parameters are `track`/`reference`/`offset_db`, not `vocal`/`mr`/`vocal_offset_db` — both `mix` mode (vocal vs. MR, +3 dB) and `stems` mode (each instrument vs. anchor, per-instrument offset) call the same function. Don't re-fork this logic per mode.
 - **Stems mode has no fixed anchor**: since any 2+ of the 5 instruments can be provided, `pipeline/stems.STEM_TARGET_LEVELS_DB` stores each instrument's level relative to a virtual drum-at-0dB scale, and the actual per-run offset is always `TARGET[track] - TARGET[anchor]`. This is what makes the balance identical regardless of which track happens to be the anchor — don't special-case "drum is anchor" logic back in.
-- **In mix mode, `vocal_only.wav` is limited before writing** (`limit()` call in `main.py`) — balance gain can push peaks past 1.0, and a PCM_24 write would clip.
+- **In mix mode, `vocal_only.wav` is limited before writing** (`limit()` call in `main.py`) — balance gain can push peaks past 1.0, and a PCM_24 write would clip. It stays mono (the vocal is never upmixed for this file).
+- **Stereo is channel-linked, never per-channel**: the audio convention is mono 1-D `(N,)` / stereo 2-D `(N, 2)` (samples-first, matching soundfile). `balance.py` applies one shared gain curve to both channels (`gain_curve[:, None]`) and `master.limit` derives its gain from the per-sample **max across channels** — computing gain independently per channel would shift the stereo image. When mixing a mono track with a stereo one, upmix the mono to dual-mono first via `loader.match_channels` / `loader.to_stereo`; length alignment uses `loader.pad_to_length` (frame axis only). Do not reintroduce `array.size`-based length/padding math — it counts channels×frames and breaks on stereo.
 - **typer and click must be pinned together**: typer 0.12 broke against click 8.4 (`make_metavar()` signature change). Currently typer 0.26.8 + click 8.4.2, both pinned.
-- The loader converts everything to **mono** — an accepted M1 simplification (MR loses its stereo image); revisit in M2.
+- The loader **preserves input channels** (mono→1-D, stereo→2-D `(N, 2)`, 3+ channels truncated to the first 2). MR and stems keep their stereo image through balance/mix/master; only the vocal is force-downmixed to mono. Full stereo *vocal processing* is still deferred to M2.
 
 ## Modes and CLI rules
 

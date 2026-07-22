@@ -10,7 +10,7 @@ import soundfile as sf
 import typer
 
 from pipeline.balance import balance_levels
-from pipeline.loader import load_and_normalize
+from pipeline.loader import load_and_normalize, match_channels, pad_to_length
 from pipeline.master import limit, master
 from pipeline.stems import load_and_balance_stems
 from pipeline.vocal_chain import process_vocal
@@ -23,9 +23,9 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 
 
 def _align_lengths(*tracks: np.ndarray) -> tuple[np.ndarray, ...]:
-    """짧은 트랙 뒤를 무음으로 채워 모든 배열의 길이를 같게 만든다."""
-    length = max(track.size for track in tracks)
-    return tuple(np.pad(track, (0, length - track.size)) for track in tracks)
+    """짧은 트랙 뒤를 무음으로 채워 모든 배열의 프레임 수를 같게 만든다. (모노/스테레오 공용)"""
+    length = max(track.shape[0] for track in tracks)
+    return tuple(pad_to_length(track, length) for track in tracks)
 
 
 def _write_wav(path: Path, audio: np.ndarray, sample_rate: int) -> None:
@@ -103,9 +103,11 @@ def run(
         return
 
     print("🎙 Loading audio...")
-    vocal_audio, sample_rate = load_and_normalize(vocal)
+    # 보컬은 항상 모노로 처리한다. (디에서/공명 억제가 모노 기준)
+    vocal_audio, sample_rate = load_and_normalize(vocal, mono=True)
     mr_audio: Optional[np.ndarray] = None
     if mode == "mix" and mr is not None:
+        # MR은 입력 채널을 보존한다. (스테레오 이미지 유지)
         mr_audio, _ = load_and_normalize(mr, sample_rate)
 
     print("⚙️ Processing vocal chain...")
@@ -123,13 +125,16 @@ def run(
     processed_vocal, mr_audio = _align_lengths(processed_vocal, mr_audio)
     print("🎛 Balancing vocal and MR...")
     balanced_vocal = balance_levels(processed_vocal, mr_audio, sample_rate)
-    mixed_audio = balanced_vocal + mr_audio
+    # MR이 스테레오면 모노 보컬을 스테레오로 업믹스해 채널을 맞춘 뒤 합친다.
+    mix_vocal, mr_audio = match_channels(balanced_vocal, mr_audio)
+    mixed_audio = mix_vocal + mr_audio
 
     print("🎚 Mastering mix...")
     mastered_mix = master(mixed_audio, sample_rate)
     vocal_path = output_dir / f"{timestamp}_vocal_only.wav"
     mix_path = output_dir / f"{timestamp}_mixed.wav"
-    # 밸런싱 게인으로 피크가 1.0을 넘을 수 있어 저장 전에 리미터로 보호한다.
+    # vocal_only는 모노 그대로 저장한다. 밸런싱 게인으로 피크가 1.0을 넘을 수
+    # 있어 저장 전에 리미터로 보호한다.
     _write_wav(vocal_path, limit(balanced_vocal, sample_rate), sample_rate)
     _write_wav(mix_path, mastered_mix, sample_rate)
     print(f"✅ Saved: {mix_path}")

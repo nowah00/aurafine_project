@@ -31,7 +31,7 @@ Aurafine은 보컬/MR 트랙을 입력받아 보컬 보정 → 레벨 밸런싱 
 ## 구현 현황 (M1)
 
 - [x] 디렉터리 구조 · 의존성 목록 · CLI · 코어 DSP 파이프라인
-- [x] `pipeline/loader.py` — ffmpeg+librosa로 44.1kHz/24-bit/모노 정규화
+- [x] `pipeline/loader.py` — ffmpeg+librosa로 44.1kHz/24-bit 정규화, 채널 수 보존(모노 1D / 스테레오 2D), 채널 정렬 헬퍼(`to_stereo`/`match_channels`/`pad_to_length`)
 - [x] `pipeline/vocal_chain.py` — HPF(100Hz) → 다이내믹 디에서(6–10kHz) → EQ(공진 억제+3–5kHz 프레즌스) → 컴프레서(4:1) → 리버브 프리셋
 - [x] `pipeline/balance.py` — 1초 RMS 구간 기반 레벨 매칭(보간, ±12dB 클램프). mix/stems 공용
 - [x] `pipeline/stems.py` — 스템 목표 레벨 테이블, 앵커 선택, 밸런싱
@@ -48,8 +48,8 @@ Aurafine은 보컬/MR 트랙을 입력받아 보컬 보정 → 레벨 밸런싱 
 - **자동 테스트·린터 도입**: 아직 없음. 추가 시 `CLAUDE.md`와 `README.md`에 설치·실행법 문서화 필요.
 - **디에서 임계값 재조정**: 합성 음원 기준으로 튜닝됨 → 실제 보컬로 검증 필요.
 - **스템 목표 레벨 테이블**: 장르 공통 기본값. 실제 스템으로 귀로 확인, 필요 시 장르별 프리셋 검토.
-- **모노 변환**: MR 스테레오 이미지 손실 — M1 단순화. M2에서 재검토.
-- **M2 범위**: 웹 레이어(FastAPI 등), DB, ML 모델.
+- **스테레오 지원 (완료, 2026-07-22)**: MR·스템은 스테레오 이미지 보존. 보컬은 모노 처리 유지(디에서/공명 억제가 모노 전용) → 보컬 자체의 스테레오 처리는 M2 과제로 남김.
+- **M2 범위**: 웹 레이어(FastAPI 등), DB, ML 모델, 스테레오 보컬 처리.
 
 ---
 
@@ -59,6 +59,15 @@ Aurafine은 보컬/MR 트랙을 입력받아 보컬 보정 → 레벨 밸런싱 
 - `git fetch`로 origin/main과 동기화 확인 (최신 상태).
 - `.gitignore`에 `.DS_Store` 추가 → 커밋(`04611d8`) → origin/main push 완료.
 - `current-task.md` 개발 로그 문서 초안 작성 (기존 `CLAUDE.md`/`README.md`/git 히스토리 기반).
+- **스테레오 믹싱 지원 추가**: 모노 강제 로직을 걷어내고 입력 채널 자동 감지·보존으로 전환.
+  - 채널 규약 확정: 모노 1D `(N,)` / 스테레오 2D `(N, 2)` (soundfile 저장 규약과 동일).
+  - `loader`: `mono` 파라미터 추가(보컬만 `True`), `to_stereo`/`match_channels`/`pad_to_length` 헬퍼 신설.
+  - `balance`: 프레임 축(`shape[0]`) 기준으로 수정, 게인 곡선을 두 채널에 공통 적용(`[:, None]`).
+  - `master.limit`: L/R **공통 게인**(채널 max 기준)으로 리미팅 → 스테레오 이미지 보존.
+  - `main`/`stems`: 길이 정렬·채널 정렬 후 믹스. 모노 보컬은 스테레오 MR에 가운데(L=R)로 업믹스, `vocal_only.wav`는 모노 유지.
+  - 실제 스테레오 샘플로 검증: mix/stems 출력 ch=2·-14 LUFS·-1dBFS, L≠R(이미지 보존 확인). 모노 입력→모노 출력도 확인.
+  - `CLAUDE.md`/`README.md`/`current-task.md` 문서 갱신.
+- **문서 재설계**: `CLAUDE.md`의 "Project layout"을 파일별 역할·공개 API 정확히 명시하도록 다시 설계(부정확했던 "모듈당 공개 함수 1개" 규칙 수정, 의존성 방향 명시). `AGENTS.md`(Codex 스펙)도 헤더만 제외하고 동일 내용으로 동기화.
 
 ### 이전 커밋 이력 (참고)
 - `b9e3d0b` 보컬을 stems 모드의 원음 트랙으로 허용

@@ -28,12 +28,15 @@ def balance_levels(
     if segment_seconds <= 0:
         raise ValueError("segment_seconds는 0보다 커야 합니다.")
 
+    # 모노는 1차원 (N,), 스테레오는 2차원 (N, 채널). 길이는 항상 첫 축(프레임 수)이다.
+    track_length = track.shape[0]
+    reference_length = reference.shape[0]
     segment_size = max(1, int(sample_rate * segment_seconds))
     centers: list[float] = []
     gains_db: list[float] = []
 
-    for start in range(0, track.size, segment_size):
-        end = min(start + segment_size, track.size, reference.size)
+    for start in range(0, track_length, segment_size):
+        end = min(start + segment_size, track_length, reference_length)
         if end <= start:
             break
 
@@ -51,8 +54,11 @@ def balance_levels(
         return track.astype(np.float32, copy=True)
 
     # 모든 샘플 위치에 대해 게인(dB)을 보간한 뒤 배율로 변환해 곱한다.
-    positions = np.arange(track.size, dtype=np.float64)
+    positions = np.arange(track_length, dtype=np.float64)
     gain_curve_db = np.interp(positions, centers, gains_db)
     gain_curve = 10.0 ** (gain_curve_db / 20.0)
+    if track.ndim == 2:
+        # 스테레오는 같은 게인 곡선을 두 채널에 동일하게 곱한다. (이미지 유지)
+        gain_curve = gain_curve[:, None]
 
     return (track.astype(np.float64) * gain_curve).astype(np.float32)

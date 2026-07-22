@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from pipeline.balance import balance_levels
-from pipeline.loader import load_and_normalize
+from pipeline.loader import load_and_normalize, match_channels, pad_to_length
 
 # 드럼을 0dB로 두고 사용자와 협의해 정한 트랙별 목표 레벨(dB).
 # 실제 anchor가 드럼이 아니어도, 두 트랙의 목표 레벨 '차이'를 offset으로 쓴다.
@@ -71,8 +71,10 @@ def load_and_balance_stems(tracks: dict[str, Path]) -> tuple[dict[str, np.ndarra
         if name != anchor:
             audio_by_name[name], _ = load_and_normalize(path, sample_rate)
 
-    length = max(audio.size for audio in audio_by_name.values())
-    aligned = {
-        name: np.pad(audio, (0, length - audio.size)) for name, audio in audio_by_name.items()
-    }
+    # 프레임 수(첫 축)를 기준으로 길이를 맞춘 뒤, 하나라도 스테레오면 채널을
+    # 스테레오로 통일한다. (믹스에서 그대로 더할 수 있게)
+    length = max(audio.shape[0] for audio in audio_by_name.values())
+    names = list(audio_by_name)
+    padded = [pad_to_length(audio, length) for audio in audio_by_name.values()]
+    aligned = dict(zip(names, match_channels(*padded)))
     return balance_stems(aligned, anchor, sample_rate), anchor, sample_rate

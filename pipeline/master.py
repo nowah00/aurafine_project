@@ -21,12 +21,18 @@ def limit(audio: np.ndarray, sample_rate: int, ceiling_db: float = -1.0) -> np.n
         return audio.astype(np.float32, copy=True)
 
     ceiling = 10.0 ** (ceiling_db / 20.0)
-    needed_gain = np.minimum(1.0, ceiling / (np.abs(audio.astype(np.float64)) + 1e-12))
+    # 스테레오는 두 채널 중 큰 피크를 기준으로 게인을 계산해 양 채널에 동일하게
+    # 적용한다. (채널별로 따로 줄이면 좌우 밸런스가 틀어져 이미지가 흔들린다.)
+    abs_audio = np.abs(audio.astype(np.float64))
+    peak = abs_audio.max(axis=1) if audio.ndim == 2 else abs_audio
+    needed_gain = np.minimum(1.0, ceiling / (peak + 1e-12))
 
     lookahead = max(1, int(sample_rate * 0.006))  # 6ms 앞서 반응
     smooth_window = max(1, int(sample_rate * 0.003))  # 3ms에 걸쳐 부드럽게
     gain = minimum_filter1d(needed_gain, size=lookahead)
     gain = uniform_filter1d(gain, size=smooth_window)
+    if audio.ndim == 2:
+        gain = gain[:, None]  # (N,) 게인을 두 채널에 브로드캐스트
 
     limited = audio.astype(np.float64) * gain
     # 스무딩으로 생길 수 있는 미세한 초과분(0.1dB 미만)을 마지막에 잘라낸다.
