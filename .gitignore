@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 *.py[cod]
+.pytest_cache/
 .idea/
 .claude/settings.local.json
 .DS_Store

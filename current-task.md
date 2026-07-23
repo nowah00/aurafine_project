@@ -4,7 +4,7 @@
 > 상세 스펙은 `CLAUDE.md`, 사용자용 안내는 `README.md`를 참고하세요.
 > 앞으로 작업을 진행할 때마다 아래 **진행상황 로그**에 계속 업데이트합니다.
 
-_최종 업데이트: 2026-07-22_
+_최종 업데이트: 2026-07-23_
 
 ---
 
@@ -38,14 +38,15 @@ Aurafine은 보컬/MR 트랙을 입력받아 보컬 보정 → 레벨 밸런싱 
 - [x] `pipeline/master.py` — 커스텀 브릭월 리미터(-1dBFS) → -14 LUFS 정규화
 - [x] `utils/analyzer.py` — RMS/LUFS/스펙트럼 분석 헬퍼
 - [x] 세 모드 모두 합성 음원 + 실제 세션 음원으로 엔드투엔드 동작 확인
-- [ ] 자동 테스트 스위트 (미구성)
+- [x] 자동 테스트 스위트 — pytest 85개 (`tests/`), 합성 신호만 사용, 약 2초
 - [ ] 린터 (미구성)
 
 ---
 
 ## 미해결 / 향후 과제
 
-- **자동 테스트·린터 도입**: 아직 없음. 추가 시 `CLAUDE.md`와 `README.md`에 설치·실행법 문서화 필요.
+- **린터 도입**: 아직 없음 (ruff 검토). 추가 시 `CLAUDE.md`/`AGENTS.md`와 `README.md`에 설치·실행법 문서화 필요.
+- **테스트 미커버 영역**: `main.py`의 CLI 플래그 검증·모드 라우팅·WAV 내보내기는 아직 테스트가 없음 (엔드투엔드 성격이라 별도 설계 필요).
 - **디에서 임계값 재조정**: 합성 음원 기준으로 튜닝됨 → 실제 보컬로 검증 필요.
 - **스템 목표 레벨 테이블**: 장르 공통 기본값. 실제 스템으로 귀로 확인, 필요 시 장르별 프리셋 검토.
 - **스테레오 지원 (완료, 2026-07-22)**: MR·스템은 스테레오 이미지 보존. 보컬은 모노 처리 유지(디에서/공명 억제가 모노 전용) → 보컬 자체의 스테레오 처리는 M2 과제로 남김.
@@ -54,6 +55,20 @@ Aurafine은 보컬/MR 트랙을 입력받아 보컬 보정 → 레벨 밸런싱 
 ---
 
 ## 진행상황 로그
+
+### 2026-07-23
+- 환경 점검: `.venv` Python 3.12.13, ffmpeg `/opt/homebrew/bin/ffmpeg`, 의존성 전부 import OK, CLI `--help` 정상. 작업트리 클린 / origin/main 동기화 상태.
+- **pytest 테스트 스위트 도입 (85개, 약 2.3초 전체 통과)**.
+  - `pytest.ini` 신설: `pythonpath = .`(테스트에서 `pipeline`/`utils` import 가능), `testpaths = tests`, `ffmpeg` 마커 등록.
+  - `tests/conftest.py`: 공용 픽스처(`sample_rate`)와 신호 헬퍼(`sine`/`stereo`/`peak_db`/`band_energy`). **모든 테스트가 합성 신호만 사용** → `samples/` 음원 없이도 실행됨.
+  - `test_analyzer.py`(13) RMS·LUFS·공명 피크 / `test_balance.py`(13) 오프셋·클램프·게인 곡선 연속성·스테레오 이미지 / `test_master.py`(17) 리미터·LUFS / `test_stems.py`(15) 목표 테이블·앵커 / `test_loader.py`(14) 채널 규약·리샘플링 / `test_vocal_chain.py`(13) 프리셋·HPF·디에서.
+  - **회귀 방지 테스트 명시**: pedalboard.Limiter의 자동 메이크업 게인 부재(조용한 신호 그대로), ceiling 오버슛 없음(-0.4dB → -1dBFS 이하), 스테레오 채널 링크 게인(L/R 비율 유지), 앵커가 바뀌어도 스템 간 상대 밸런스 동일 — CLAUDE.md "do not regress" 항목과 1:1 대응.
+  - 로더 테스트만 실제 ffmpeg를 호출 → `@pytest.mark.ffmpeg` + ffmpeg 부재 시 자동 skip. `-m "not ffmpeg"`로 제외 가능.
+  - `vocal_chain._deess` / `stems._pick_anchor`는 동작 자체가 회귀 방지 대상이라 private이지만 직접 테스트 (스펙에 예외로 명시).
+  - **초기 실패 4건은 전부 테스트 픽스처 문제였고 코드 버그 아님**: 픽스처의 트랙 간 레벨 차이가 `balance_levels`의 ±12dB 클램프를 넘어 목표 오프셋에 미달(예: 13.98dB 필요 → 12dB 클램프 → 정확히 1.98dB 부족). 픽스처 레벨을 좁히고, 이 함정을 CLAUDE.md/AGENTS.md의 "테스트 작성 규칙"에 기록.
+  - `pytest==9.1.1`을 `requirements.txt`에 개발용으로 고정, `.gitignore`에 `.pytest_cache/` 추가.
+  - `CLAUDE.md`/`AGENTS.md`(동기화)에 테스트 실행법·작성 규칙 섹션 추가, `README.md`에 사용자용 "테스트" 섹션(파일별 커버리지 표) 추가.
+- **참고**: `main.py`가 145줄로 스펙의 150줄 상한에 근접. 다음에 `main.py`를 확장할 때는 헬퍼 추출이 먼저 필요할 수 있음.
 
 ### 2026-07-22
 - `git fetch`로 origin/main과 동기화 확인 (최신 상태).

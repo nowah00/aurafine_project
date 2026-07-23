@@ -26,7 +26,9 @@ pipeline/master.py      # channel-linked brickwall limiter + LUFS normalization
 utils/analyzer.py       # stateless RMS / LUFS / spectral-peak helpers
 samples/                # user-provided audio; never commit it
 output/                 # generated WAV files; never commit it
-requirements.txt        # pinned Python dependencies
+tests/                  # pytest suite (synthetic signals only; no audio files needed)
+pytest.ini              # pytest config (pythonpath, testpaths, markers)
+requirements.txt        # pinned Python dependencies (incl. pytest)
 README.md               # user-facing setup and run instructions
 current-task.md         # dev log / progress tracker (append per work session)
 CLAUDE.md / AGENTS.md   # implementation spec for Claude Code / Codex — keep the two in sync
@@ -61,7 +63,23 @@ Each module owns one responsibility and exposes only the type-hinted functions l
 .venv/bin/python main.py --vocal samples/vocal.wav --mode voice
 ```
 
-No linter or test suite is configured yet. When one is added, document its installation and command in both this file and `README.md`.
+### Tests
+
+```bash
+.venv/bin/python -m pytest          # full suite (~2s)
+.venv/bin/python -m pytest -m "not ffmpeg"   # skip the tests that shell out to ffmpeg
+```
+
+`pytest.ini` sets `pythonpath = .` so tests can `import pipeline...` / `import utils...`; `testpaths = tests`. `tests/conftest.py` holds the shared fixtures and signal helpers (`sine`, `stereo`, `peak_db`, `band_energy`) — every test builds its own synthetic audio, so the suite never touches `samples/` and runs without any user audio.
+
+Test-writing rules:
+
+- **Watch the ±12 dB clamp when picking fixture levels.** `balance_levels` caps its gain at ±12 dB, so a fixture whose tracks differ by more than that will silently miss the target offset and the assertion failure will look like a bug in the code. Keep test tracks within a few dB of each other unless the clamp itself is what you're testing.
+- **pyloudnorm needs ≥ 0.4 s of audio** for an integrated-loudness reading; LUFS assertions use 5-second signals. Shorter audio exercises the `master` fallback path (limiter only).
+- `tests/test_master.py` and the stems anchor tests are **regression guards** for the "do not regress" notes below (no makeup gain, no ceiling overshoot, channel-linked stereo gain, anchor-independent balance). Don't weaken them.
+- Private helpers are tested directly where the behavior itself is the regression target (`vocal_chain._deess`, `stems._pick_anchor`); this is the one sanctioned exception to the "don't call `_`-prefixed functions across modules" rule.
+
+No linter is configured yet. When one is added, document its installation and command in both this file and `README.md`.
 
 ## Fixed pipeline order
 
